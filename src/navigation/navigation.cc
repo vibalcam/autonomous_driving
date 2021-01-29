@@ -34,6 +34,7 @@
 #include "visualization/visualization.h"
 
 using Eigen::Vector2f;
+using Eigen::Rotation2Df;
 using amrl_msgs::AckermannCurvatureDriveMsg;
 using amrl_msgs::VisualizationMsg;
 using std::string;
@@ -56,6 +57,16 @@ const float kEpsilon = 1e-5;
 } //namespace
 
 namespace navigation {
+
+// Maximum speed in m/s
+const int MAX_SPEED = 1;
+// Maximum acceleration/deceleration in m/s^2
+const int MAX_ACCELERATION = 3;
+// Time between decisions (s)
+const float DELTA_T = 0.05;
+
+float dist_covered = 0;
+bool isFirst = true;
 
 Navigation::Navigation(const string& map_file, ros::NodeHandle* n) :
     robot_loc_(0, 0),
@@ -87,8 +98,20 @@ void Navigation::UpdateOdometry(const Vector2f& loc,
                                 float angle,
                                 const Vector2f& vel,
                                 float ang_vel) {
+    if(!isFirst) {
+      Rotation2Df r1(-robot_angle_);
+      Vector2f loc_rel = r1 * (loc - robot_loc_);
+      dist_covered += loc_rel.norm();
+    }
+    isFirst = false;
+    
     // Update the robot's position in the odometry reference frame.
+    robot_loc_ = loc;
+    robot_angle_ = angle;
     // Update the current estimate of the robot's velocity
+    robot_vel_ = vel;
+    std::cout << "Velocity: " << vel << std::endl;
+    robot_omega_ = ang_vel;
 }
 
 void Navigation::ObservePointCloud(const vector<Vector2f>& cloud,
@@ -100,6 +123,18 @@ void Navigation::ObservePointCloud(const vector<Vector2f>& cloud,
 
 void Navigation::Run() {
   // Called every timestep. This will be the main entrypoint of the navigation code, and is responsible for publishing appropriate navitation commands.
+  AckermannCurvatureDriveMsg msg;
+  float velocity = robot_vel_.norm();
+  float dist_left = FLAGS_cp1_distance - dist_covered;
+  std::cout << "Distance_left: " << dist_left << std::endl;
+  // Check if there is space to accelerate
+  if(velocity < MAX_SPEED && dist_left > MAX_ACCELERATION * pow(DELTA_T, 2) / 2 + velocity * DELTA_T + pow(MAX_SPEED, 2) / MAX_ACCELERATION / 2) {
+    msg.velocity = MAX_SPEED;
+  } else if(dist_left < velocity * DELTA_T + pow(velocity, 2) / MAX_ACCELERATION / 2) {   // If there is no space to keep at the same speed, stop
+    msg.velocity = 0;
+  }
+  
+  drive_pub_.publish(msg);
 }
 
 }  // namespace navigation
