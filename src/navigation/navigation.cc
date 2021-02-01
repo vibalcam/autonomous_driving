@@ -128,10 +128,19 @@ void Navigation::Run() {
   float dist_left = FLAGS_cp1_distance - dist_covered;
   std::cout << "Distance_left: " << dist_left << std::endl;
   // Check if there is space to accelerate
-  if(velocity < MAX_SPEED && dist_left > MAX_ACCELERATION * pow(DELTA_T, 2) / 2 + velocity * DELTA_T + pow(MAX_SPEED, 2) / MAX_ACCELERATION / 2) {
-    msg.velocity = MAX_SPEED;
-  } else if(dist_left < velocity * DELTA_T + pow(velocity, 2) / MAX_ACCELERATION / 2) {   // If there is no space to keep at the same speed, stop
-    msg.velocity = 0;
+  if(dist_left > MAX_ACCELERATION * pow(DELTA_T, 2) / 2 + velocity * DELTA_T + pow(MAX_SPEED, 2) / MAX_ACCELERATION / 2) {
+    velocity += DELTA_T * MAX_ACCELERATION;
+    if(velocity > MAX_SPEED)
+      velocity = MAX_SPEED;
+
+    msg.velocity = velocity;
+  }  else if(dist_left < velocity * DELTA_T + pow(velocity, 2) / MAX_ACCELERATION / 2) {   // If there is no space to keep at the same speed, stop
+    velocity -= DELTA_T * MAX_ACCELERATION;
+    if(velocity < 0) {
+      velocity = 0;
+    }
+
+    msg.velocity = velocity;
   }
   
   drive_pub_.publish(msg);
