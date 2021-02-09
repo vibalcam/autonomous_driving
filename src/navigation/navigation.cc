@@ -66,19 +66,28 @@ const int MAX_SPEED = 1;
 const int MAX_ACCELERATION = 3;
 // Time between decisions (s)
 const float DELTA_T = 0.05;
+
 // System latency in s
-const float LATENCY = 0.15;
-const int FWD_PREDICT_PERIODS = 3;  // latency takes 3 instructions
-// Obstacle margin in m
-const float OBSTACLE_MARGIN = 0.1;
+// const float LATENCY = 0.15;
+const int FWD_PREDICT_PERIODS = 3;  // latency takes n instructions
+
 // Location of the LIDAR with respect to base_link (BASE = LIDAR + v)
 const Vector2f LOCATION_LIDAR(0.2,0);
+// Obstacle margin in m
+const float OBSTACLE_MARGIN = 0.1;
 
 // Dimensions of car in m
 // const float WIDTH = 0.281;
 // const float HEIGHT = 0.206;
-const float FRONT_BASE_LINK = 0.43;
-const float SIDE_BASE_LINK = 0.1405; // absolute value, both sides (real measure 0.133)
+const float FRONT_BASE = 0.4;
+// const float FRONT_BASE = 0.4295;
+const float REER_BASE = -0.1055;
+const float SIDE_ABS_BASE = 0.1405; // absolute value, both sides (real measure 0.133)
+
+// Dimensions of car including margin in m
+const float FRONT_MARGIN_BASE = FRONT_BASE + OBSTACLE_MARGIN;
+const float REER_MARGIN_BASE = REER_BASE - OBSTACLE_MARGIN;
+const float SIDE_ABS_MARGIN_BASE = SIDE_ABS_BASE + OBSTACLE_MARGIN;
 
 // Point cloud from the LIDAR in the sensor's reference frame
 vector<Vector2f> pointCloud;
@@ -140,15 +149,51 @@ void Navigation::ObservePointCloud(const vector<Vector2f>& cloud,
   pointCloud = cloud;
 }
 
+void visualizeCarDimensions(VisualizationMsg& viz_msg) {
+  // Visualize car dimensions
+  visualization::DrawLine(
+    Vector2f(REER_BASE,SIDE_ABS_BASE), Vector2f(REER_BASE,-SIDE_ABS_BASE), 0xFF0000, viz_msg);
+  visualization::DrawLine(
+    Vector2f(FRONT_BASE,SIDE_ABS_BASE), Vector2f(FRONT_BASE,-SIDE_ABS_BASE), 0xFF0000, viz_msg);
+  visualization::DrawLine(
+    Vector2f(FRONT_BASE,SIDE_ABS_BASE), Vector2f(REER_BASE,SIDE_ABS_BASE), 0xFF0000, viz_msg);
+  visualization::DrawLine(
+    Vector2f(FRONT_BASE,-SIDE_ABS_BASE), Vector2f(REER_BASE,-SIDE_ABS_BASE), 0xFF0000, viz_msg);
+  
+  // Visualize car margins
+  visualization::DrawLine(
+    Vector2f(REER_MARGIN_BASE,SIDE_ABS_MARGIN_BASE), Vector2f(REER_MARGIN_BASE,-SIDE_ABS_MARGIN_BASE), 0xf57d05, viz_msg);
+  visualization::DrawLine(
+    Vector2f(FRONT_MARGIN_BASE,SIDE_ABS_MARGIN_BASE), Vector2f(FRONT_MARGIN_BASE,-SIDE_ABS_MARGIN_BASE), 0xf57d05, viz_msg);
+  visualization::DrawLine(
+    Vector2f(FRONT_MARGIN_BASE,SIDE_ABS_MARGIN_BASE), Vector2f(REER_MARGIN_BASE,SIDE_ABS_MARGIN_BASE), 0xf57d05, viz_msg);
+  visualization::DrawLine(
+    Vector2f(FRONT_MARGIN_BASE,-SIDE_ABS_MARGIN_BASE), Vector2f(REER_MARGIN_BASE,-SIDE_ABS_MARGIN_BASE), 0xf57d05, viz_msg);
+
+    // Visualize current front
+  visualization::DrawLine(Vector2f(0,0), Vector2f(2,0), 0x0400ff, viz_msg);
+}
+
 void Navigation::Run() {
   // Called every timestep. This will be the main entrypoint of the navigation code, and is responsible for publishing appropriate navitation commands.
   // Clear Visualizations
   visualization::ClearVisualizationMsg(local_viz_msg_);
   visualization::ClearVisualizationMsg(global_viz_msg_);
 
-  // Visualize current front
-  visualization::DrawLine(
-    Vector2f(0,0), Vector2f(2,0), 0x0400ff, local_viz_msg_);
+  visualizeCarDimensions(local_viz_msg_);
+
+
+  // // todo Calculations for r
+  // float r1 = r - SIDE_ABS_MARGIN_BASE;
+  // float r2 = sqrt(pow(r+SIDE_ABS_MARGIN_BASE,2) + pow(FRONT_MARGIN_BASE,2));
+  // float distToCenter = (p-c).norm();
+  // // check if dist to center is between r1 and r2
+  // // use atan2(y,x), consider if point behind if we will hit it
+  // float theta = atan2(p.x(),r-p.y());
+  // float omega = atan2(FRONT_MARGIN_BASE,r-SIDE_ABS_MARGIN_BASE);
+  // float f = r * (theta-omega);
+
+
 
   float velocity = robot_vel_.norm();
   // float dist_left = FLAGS_cp1_distance - distCovered;
@@ -158,10 +203,10 @@ void Navigation::Run() {
   float x, absY;
   for(Vector2f v : pointCloud) {
     v += LOCATION_LIDAR;  // Change to base_link
-    visualization::DrawCross(v, 0.05, 0xfc766f, local_viz_msg_);
+    // visualization::DrawCross(v, 0.05, 0xfc766f, local_viz_msg_);
 
-    x = v.x() - (FRONT_BASE_LINK + OBSTACLE_MARGIN);  // Check x value from obstacle
-    absY = abs(v.y()) - (SIDE_BASE_LINK + OBSTACLE_MARGIN); // Check y value from obstacle
+    x = v.x() - FRONT_MARGIN_BASE;  // Check x value from obstacle
+    absY = abs(v.y()) - SIDE_ABS_MARGIN_BASE; // Check y value from obstacle
     // std::cout << "Viewed: " << x << std::endl;
     if(absY <= 0 && dist_left > x) {  // if going to hit obstacle before reaching goal
       dist_left = x;
@@ -169,7 +214,7 @@ void Navigation::Run() {
     }
   }
   // Visualize distance left
-  std::cout << "Distance_left: " << dist_left << std::endl;
+  std::cout << "Distance_left: " << (dist_left + OBSTACLE_MARGIN) << std::endl;
   // visualization::DrawCross(Vector2f(dist_left, 0), 0.2, 0x0dff00, local_viz_msg_);
   
   // Forward predict to take into account latency
