@@ -75,12 +75,14 @@ const int FWD_PREDICT_PERIODS = 3;  // latency takes n instructions
 const Vector2f LOCATION_LIDAR(0.2,0);
 // Obstacle margin in m
 const float OBSTACLE_MARGIN = 0.1;
+// Min curvature of turning (otherwise considered as driving straight)
+const float MIN_CURVATURE = 0.01;
 
 // Dimensions of car in m
 // const float WIDTH = 0.281;
 // const float HEIGHT = 0.206;
-const float FRONT_BASE = 0.4;
-// const float FRONT_BASE = 0.4295;
+// const float FRONT_BASE = 0.4;
+const float FRONT_BASE = 0.4295;
 const float REER_BASE = -0.1055;
 const float SIDE_ABS_BASE = 0.1405; // absolute value, both sides (real measure 0.133)
 
@@ -141,6 +143,11 @@ void Navigation::UpdateOdometry(const Vector2f& loc,
     robot_omega_ = ang_vel;
 }
 
+float atan2Positive(float y, float x) {
+  float a = atan2(y,x);
+  return (a>=0) ? a : a + 2*M_PI;;
+}
+
 void Navigation::ObservePointCloud(const vector<Vector2f>& cloud,
                                    double time) {
   // This function will be called when the LiDAR sensor on the robot has a new scan.
@@ -174,61 +181,85 @@ void visualizeCarDimensions(VisualizationMsg& viz_msg) {
   visualization::DrawLine(Vector2f(0,0), Vector2f(2,0), 0x0400ff, viz_msg);
 }
 
-void Navigation::Run() {
-  // Called every timestep. This will be the main entrypoint of the navigation code, and is responsible for publishing appropriate navitation commands.
-  // Clear Visualizations
-  visualization::ClearVisualizationMsg(local_viz_msg_);
-  visualization::ClearVisualizationMsg(global_viz_msg_);
+void calculateFreePath(float& dist_left, float curvature) {
+  if(abs(curvature) > MIN_CURVATURE) { // if turning
+    // Radius of turning
+    // todo why do back if not going to drive backwards
+    float r = 1.0f / abs(curvature);
+    float signR = signbit(curvature) * -2 + 1; // from (0,1) (1 if negative) to (-1,1), 1 if turning left
+    float r1 = r - SIDE_ABS_MARGIN_BASE;
+    float r2 = sqrt(pow(r+SIDE_ABS_MARGIN_BASE,2) + pow(FRONT_MARGIN_BASE,2));
 
-  visualizeCarDimensions(local_viz_msg_);
+    // check if points are in the turning arc
+    float distToCenter,theta,omega,freePath;
+    for(Vector2f v : pointCloud) {
+      v += LOCATION_LIDAR;  // Change to base_link
+      // visualization::DrawCross(v, 0.04, 0xfc766f, local_viz_msg_);
+      v.y() *= signR;  // Change y value deppending on direction of turning
+      distToCenter = (v-Vector2f(0,r)).norm();
 
+      // check if dist to center is between r1 and r2
+      if(distToCenter >= r1 && distToCenter <= r2) {
+        visualization::DrawCross(Vector2f(v.x(),signR*v.y()), 0.04, 0xfc766f, local_viz_msg_);
+        // std::cout << "Viewed: " << v << std::endl;
+        theta = atan2Positive(v.x(),r-v.y());
+        omega = atan2Positive(FRONT_MARGIN_BASE,r-SIDE_ABS_MARGIN_BASE);
+        freePath = r * (theta-omega);
+        if(dist_left > freePath)
+          dist_left = freePath;
+      }
+    }
+  } else {  // if driving straight
+    float x, absY;
+    for(Vector2f v : pointCloud) {
+      v += LOCATION_LIDAR;  // Change to base_link
+      // visualization::DrawCross(v, 0.04, 0xfc766f, local_viz_msg_);
 
-  // // todo Calculations for r
-  // float r1 = r - SIDE_ABS_MARGIN_BASE;
-  // float r2 = sqrt(pow(r+SIDE_ABS_MARGIN_BASE,2) + pow(FRONT_MARGIN_BASE,2));
-  // float distToCenter = (p-c).norm();
-  // // check if dist to center is between r1 and r2
-  // // use atan2(y,x), consider if point behind if we will hit it
-  // float theta = atan2(p.x(),r-p.y());
-  // float omega = atan2(FRONT_MARGIN_BASE,r-SIDE_ABS_MARGIN_BASE);
-  // float f = r * (theta-omega);
-
-
-
-  float velocity = robot_vel_.norm();
-  // float dist_left = FLAGS_cp1_distance - distCovered;
-  float dist_left = 10;
-
-  // Check if there are any obstacles ahead
-  float x, absY;
-  for(Vector2f v : pointCloud) {
-    v += LOCATION_LIDAR;  // Change to base_link
-    // visualization::DrawCross(v, 0.05, 0xfc766f, local_viz_msg_);
-
-    x = v.x() - FRONT_MARGIN_BASE;  // Check x value from obstacle
-    absY = abs(v.y()) - SIDE_ABS_MARGIN_BASE; // Check y value from obstacle
-    // std::cout << "Viewed: " << x << std::endl;
-    if(absY <= 0 && dist_left > x) {  // if going to hit obstacle before reaching goal
-      dist_left = x;
-      // std::cout << "Change: " << dist_left << " for " << (x + OBSTACLE_MARGIN) << std::endl;
+      x = v.x() - FRONT_MARGIN_BASE;  // Check x value from obstacle
+      absY = abs(v.y()) - SIDE_ABS_MARGIN_BASE; // Check y value from obstacle
+      // std::cout << "Viewed: " << x << std::endl;
+      if(absY <= 0 && dist_left > x) {  // if going to hit obstacle before reaching goal
+        visualization::DrawCross(v, 0.04, 0xfc766f, local_viz_msg_);
+        dist_left = x;
+      }
     }
   }
-  // Visualize distance left
-  std::cout << "Distance_left: " << (dist_left + OBSTACLE_MARGIN) << std::endl;
-  // visualization::DrawCross(Vector2f(dist_left, 0), 0.2, 0x0dff00, local_viz_msg_);
-  
+}
+
+void doLatencyCompensation(float& dist_left, float& velocity) {
   // Forward predict to take into account latency
-  if(!IS_SIMULATION) {
-    for(int k=0; k < FWD_PREDICT_PERIODS; k++) {
-      // Distance covered in this period: (v2-v1)/2*t+v1*t=((v2-v1)/2+v1)*t
-      dist_left -= ((futureVelocities[k] - velocity) / 2 + velocity) * DELTA_T;
-      velocity = futureVelocities[k];
+  for(int k=0; k < FWD_PREDICT_PERIODS; k++) {
+    // Distance covered in this period: (v2-v1)/2*t+v1*t=((v2-v1)/2+v1)*t
+    dist_left -= ((futureVelocities[k] - velocity) / 2 + velocity) * DELTA_T;
+    velocity = futureVelocities[k];
 
-      if(k != FWD_PREDICT_PERIODS-1)
-        futureVelocities[k] = futureVelocities[k+1]; 
-    }
+    if(k != FWD_PREDICT_PERIODS-1)
+      futureVelocities[k] = futureVelocities[k+1]; 
   }
 
+  // todo latency compensation with curvature, done for left only
+  // Vector2f forwardPredict(0,0); // v = v - forwardPredict to change to current base link
+  // float dist,ang;
+  // // Forward predict to take into account latency
+  // if(!IS_SIMULATION) {
+  //   for(int k=0; k < FWD_PREDICT_PERIODS; k++) {
+  //     // Distance covered in this period: (v2-v1)/2*t+v1*t=((v2-v1)/2+v1)*t
+  //     dist = ((futureVelocities[k] - velocity) / 2 + velocity) * DELTA_T;
+  //     if(curvature > MIN_CURVATURE) {
+  //       ang = dist / r;
+  //       forwardPredict += Vector2f(sin(ang) * r, r - cos(ang) * r);
+  //     } else {
+  //       forwardPredict += Vector2f(dist, 0);
+  //     }
+
+  //     velocity = futureVelocities[k];
+  //     if(k != FWD_PREDICT_PERIODS-1)
+  //       futureVelocities[k] = futureVelocities[k+1]; 
+  //   }
+  // }
+}
+
+void drive(float& dist_left, float& velocity, float& curvature) {
   // Check if there is space to accelerate
   float speedUp = velocity + DELTA_T * MAX_ACCELERATION;
   if(speedUp > MAX_SPEED)
@@ -237,7 +268,7 @@ void Navigation::Run() {
     velocity = speedUp;
 
     drive_msg_.velocity = velocity;
-    drive_msg_.curvature = 0;
+    drive_msg_.curvature = curvature;
     drive_pub_.publish(drive_msg_);
   } else if(dist_left < velocity * DELTA_T + pow(velocity, 2) / MAX_ACCELERATION / 2) {   // If there is no space to keep at the same speed, stop
     velocity -= DELTA_T * MAX_ACCELERATION;
@@ -246,9 +277,37 @@ void Navigation::Run() {
     }
 
     drive_msg_.velocity = velocity;
-    drive_msg_.curvature = 0;
+    drive_msg_.curvature = curvature;
     drive_pub_.publish(drive_msg_);
   }
+}
+
+void Navigation::Run() {
+  // Called every timestep. This will be the main entrypoint of the navigation code, and is responsible for publishing appropriate navitation commands.
+  // Clear Visualizations
+  visualization::ClearVisualizationMsg(local_viz_msg_);
+  visualization::ClearVisualizationMsg(global_viz_msg_);
+  visualizeCarDimensions(local_viz_msg_);
+
+  float velocity = robot_vel_.norm();
+  float curvature = FLAGS_cp3_curvature;
+  float dist_left = FLAGS_cp1_distance - distCovered;
+  // float dist_left = 10;
+  visualization::DrawPathOption(curvature,dist_left,SIDE_ABS_MARGIN_BASE,local_viz_msg_);
+
+  // Check if there are any obstacles ahead
+  calculateFreePath(dist_left, curvature);
+
+  // Visualize distance left
+  std::cout << "Distance_left: " << (dist_left + OBSTACLE_MARGIN) << std::endl;
+  
+  // Do latency compensation
+  if(!IS_SIMULATION) {
+    doLatencyCompensation(dist_left, velocity);
+  }
+
+  // Drive distance left
+  drive(dist_left, velocity, curvature);
 
   // Save commands
   futureVelocities[FWD_PREDICT_PERIODS-1] = velocity;
