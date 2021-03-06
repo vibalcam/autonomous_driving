@@ -95,10 +95,10 @@ void LaserCallback(const sensor_msgs::LaserScan& msg) {
   int size = r_array.size();
 
   // Vector2f v;
-  float theta = theta_min;
+  float theta = theta_min - theta_delta;
   float value;
   for(int i=0; i<size; i++) {
-  // for(float theta=theta_min; theta<=theta_max; theta+=theta_delta){
+    theta += theta_delta;
     value = r_array[i];
     // check if each range is in bounds
     if(value > range_max || value < range_min) {
@@ -107,8 +107,6 @@ void LaserCallback(const sensor_msgs::LaserScan& msg) {
 
     Vector2f v(value * cos(theta), value * sin(theta));
     point_cloud_.push_back(v);
-    theta += theta_delta;
-
     // std::cout << "Viewed laser: " << v.x() << std::endl;
   }
   //End
