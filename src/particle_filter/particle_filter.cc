@@ -44,11 +44,20 @@ using std::swap;
 using std::vector;
 using Eigen::Vector2f;
 using Eigen::Vector2i;
+using Eigen::Rotation2Df;
 using vector_map::VectorMap;
 
 DEFINE_double(num_particles, 50, "Number of particles");
 
 namespace particle_filter {
+// Values for the estimation of gaussian error
+const float K1 = 0.1; 
+const float K2 = 0.2; 
+const float K3 = 0.5; 
+const float K4 = 0.2; 
+// Initialization randomness values
+const float INIT_VAR_LOC = 0.3;
+const float INIT_VAR_ANG = 13 / 180 * M_PI;
 
 config_reader::ConfigReader config_reader_({"config/particle_filter.lua"});
 
@@ -155,19 +164,76 @@ void ParticleFilter::ObserveLaser(const vector<float>& ranges,
   // Call the Update and Resample steps as necessary.
 }
 
+float getValidAng(float ang) {
+  // ang between -pi, pi
+  if(ang > M_PI) {
+    int div = (int) (abs(ang / (2*M_PI)) + 1);
+    ang -= 2 * M_PI * div;
+  } else if(ang < -M_PI) {
+    int div = (int) (abs(ang / (2*M_PI)) + 1);
+    ang += 2 * M_PI * div;
+  }
+  return ang;
+}
+
 void ParticleFilter::ObserveOdometry(const Vector2f& odom_loc,
                                      const float odom_angle) {
   // A new odometry value is available (in the odom frame)
   // Implement the motion model predict step here, to propagate the particles
   // forward based on odometry.
 
-
   // You will need to use the Gaussian random number generator provided. For
   // example, to generate a random number from a Gaussian with mean 0, and
   // standard deviation 2:
-  float x = rng_.Gaussian(0.0, 2.0);
-  printf("Random number drawn from Gaussian distribution with 0 mean and "
-         "standard deviation of 2 : %f\n", x);
+  // float x = rng_.Gaussian(0.0, 2.0);
+  // printf("Random number drawn from Gaussian distribution with 0 mean and "
+  //        "standard deviation of 2 : %f\n", x);
+
+  if(odom_initialized_) {
+    // Car reference frame
+    Rotation2Df rOdo(-prev_odom_angle_);
+    Vector2f loc_car = rOdo * (odom_loc - prev_odom_loc_);
+
+    float epsilonX, epsilonY, epsilonTheta, deltaAngle;
+    Vector2f loc_delta, newLoc;
+    bool intersects;
+    int size = particles_.size();
+    for(int k=0; k<size; k++) {
+      // Map reference frame
+      Rotation2Df rMap(particles_[k].angle);
+      loc_delta = rMap * loc_car;
+      deltaAngle = getValidAng(odom_angle - prev_odom_angle_);
+
+      // Gaussian for random error
+      epsilonX = rng_.Gaussian(0.0, K1 * loc_delta.norm() + K2 * abs(deltaAngle));
+      epsilonY = rng_.Gaussian(0.0, K1 * loc_delta.norm() + K2 * abs(deltaAngle));
+      epsilonTheta = rng_.Gaussian(0.0, K3 * loc_delta.norm() + K4 * abs(deltaAngle));
+
+      // Update particle
+      particles_[k].angle += deltaAngle + epsilonTheta;
+      particles_[k].angle = getValidAng(particles_[k].angle);
+      newLoc = particles_[k].loc + loc_delta + Vector2f(epsilonX, epsilonY);
+      intersects = false;
+      for(Line2f l : map_.lines) {
+        if(l.Intersects(Line2f(particles_[k].loc, newLoc))) {
+          intersects = true;
+          break;
+        }
+      }
+      // Only update the particle if it is not hitting a wall
+      if(!intersects) {
+        particles_[k].loc = newLoc;
+      } else { // Set this particle same as the next one
+        if(k > 0)
+          particles_[k] = particles_[k-1];
+        else
+          particles_[k] = particles_[size-1];
+      }
+    }
+  }
+  odom_initialized_ = true;
+  prev_odom_loc_ = odom_loc;
+  prev_odom_angle_ = odom_angle;
 }
 
 void ParticleFilter::Initialize(const string& map_file,
@@ -177,6 +243,22 @@ void ParticleFilter::Initialize(const string& map_file,
   // was received from the log. Initialize the particles accordingly, e.g. with
   // some distribution around the provided location and angle.
   map_.Load(map_file);
+  const int n = 50;
+  particles_.resize(n);
+  particles_.clear();
+
+  float epsilonX, epsilonY, epsilonTheta;
+  for (int i = 0; i < n; i++){
+    epsilonX = rng_.Gaussian(0.0, INIT_VAR_LOC);
+    epsilonY = rng_.Gaussian(0.0, INIT_VAR_LOC);
+    epsilonTheta = rng_.Gaussian(0.0, INIT_VAR_ANG);
+ 
+    Vector2f newLoc(loc.x() + epsilonX, loc.y() + epsilonY);
+    float newAngle = getValidAng(angle + epsilonTheta);
+ 
+    Particle newParticle = {newLoc, newAngle, 1};
+    particles_.push_back(newParticle);
+  }
 }
 
 void ParticleFilter::GetLocation(Eigen::Vector2f* loc_ptr, 
