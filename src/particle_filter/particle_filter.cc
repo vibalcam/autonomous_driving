@@ -57,7 +57,11 @@ const float K3 = 0.5;
 const float K4 = 0.2; 
 // Initialization randomness values
 const float INIT_VAR_LOC = 0.3;
-const float INIT_VAR_ANG = 13 / 180 * M_PI;
+const float INIT_VAR_ANG = M_PI * 13.0 / 180.0;
+
+// TODO make generic for navigation and particle filter
+// Location of the LIDAR with respect to base_link (BASE = LIDAR + v)
+const Vector2f LOCATION_LIDAR(0.2,0);
 
 config_reader::ConfigReader config_reader_({"config/particle_filter.lua"});
 
@@ -68,6 +72,15 @@ ParticleFilter::ParticleFilter() :
 
 void ParticleFilter::GetParticles(vector<Particle>* particles) const {
   *particles = particles_;
+}
+
+float getValidAng(float ang) {
+  if(abs(ang) > M_PI) {
+    int div = (int) (ang / (2*M_PI) + 1);
+    ang -= 2 * M_PI * div;
+  }
+  return ang;
+  // return math_util::AngleMod(ang);
 }
 
 void ParticleFilter::GetPredictedPointCloud(const Vector2f& loc,
@@ -86,15 +99,15 @@ void ParticleFilter::GetPredictedPointCloud(const Vector2f& loc,
   // expected observations, to be used for the update step.
 
   // Note: The returned values must be set using the `scan` variable:
-  scan.resize(num_ranges);
+  // scan.resize(num_ranges);
   // Fill in the entries of scan using array writes, e.g. scan[i] = ...
-  for (size_t i = 0; i < scan.size(); ++i) {
-    scan[i] = Vector2f(0, 0);
-  }
+  // for (size_t i = 0; i < scan.size(); ++i) {
+  //   scan[i] = Vector2f(0, 0);
+  // }
 
   // The line segments in the map are stored in the `map_.lines` variable. You
   // can iterate through them as:
-  for (size_t i = 0; i < map_.lines.size(); ++i) {
+  // for (size_t i = 0; i < map_.lines.size(); ++i) {
     /*
     const Line2f map_line = map_.lines[i];
     // The Line2f class has helper functions that will be useful.
@@ -121,6 +134,38 @@ void ParticleFilter::GetPredictedPointCloud(const Vector2f& loc,
       printf("No intersection\n");
     }
     */
+  // }
+
+  scan.resize(num_ranges);
+  Vector2f min_intersection_point;
+  Vector2f LOCATION_LIDAR_MAP = loc + LOCATION_LIDAR;
+  float cos_v,sin_v, sq_norm, min_sq_norm;
+  float theta = getValidAng(angle + angle_min);
+  float delta_theta = (angle_max-angle_min) / num_ranges;
+
+  for (size_t i = 0; i < scan.size(); ++i) {
+    min_intersection_point = LOCATION_LIDAR_MAP + Vector2f(range_max+1,0);
+    min_sq_norm = pow(range_max+1,2);
+    cos_v = cos(theta);
+    sin_v = sin(theta);
+    Line2f my_line(LOCATION_LIDAR_MAP.x() + cos_v * range_min,LOCATION_LIDAR_MAP.y() + sin_v * range_min,
+                    LOCATION_LIDAR_MAP.x() + cos_v * range_max, LOCATION_LIDAR_MAP.y() + sin_v * range_max);
+
+    // Iterate through all the lines in the map
+    for (size_t j = 0; j < map_.lines.size(); ++j) {
+      Vector2f intersection_point;
+      if (map_.lines[j].Intersection(my_line, &intersection_point)) {
+        sq_norm = (intersection_point - LOCATION_LIDAR_MAP).squaredNorm();
+        if(sq_norm < pow(range_max,2) && sq_norm > pow(range_min,2) &&
+            sq_norm < min_sq_norm) {
+          min_intersection_point = intersection_point;
+          min_sq_norm = sq_norm;
+        }
+      } 
+    }
+
+    scan[i] = min_intersection_point;
+    theta = getValidAng(theta + delta_theta);
   }
 }
 
@@ -164,18 +209,6 @@ void ParticleFilter::ObserveLaser(const vector<float>& ranges,
   // Call the Update and Resample steps as necessary.
 }
 
-float getValidAng(float ang) {
-  // ang between -pi, pi
-  if(ang > M_PI) {
-    int div = (int) (abs(ang / (2*M_PI)) + 1);
-    ang -= 2 * M_PI * div;
-  } else if(ang < -M_PI) {
-    int div = (int) (abs(ang / (2*M_PI)) + 1);
-    ang += 2 * M_PI * div;
-  }
-  return ang;
-}
-
 void ParticleFilter::ObserveOdometry(const Vector2f& odom_loc,
                                      const float odom_angle) {
   // A new odometry value is available (in the odom frame)
@@ -196,7 +229,7 @@ void ParticleFilter::ObserveOdometry(const Vector2f& odom_loc,
 
     float epsilonX, epsilonY, epsilonTheta, deltaAngle;
     Vector2f loc_delta, newLoc;
-    bool intersects;
+    // bool intersects;
     int size = particles_.size();
     for(int k=0; k<size; k++) {
       // Map reference frame
@@ -213,15 +246,8 @@ void ParticleFilter::ObserveOdometry(const Vector2f& odom_loc,
       particles_[k].angle += deltaAngle + epsilonTheta;
       particles_[k].angle = getValidAng(particles_[k].angle);
       newLoc = particles_[k].loc + loc_delta + Vector2f(epsilonX, epsilonY);
-      intersects = false;
-      for(Line2f l : map_.lines) {
-        if(l.Intersects(Line2f(particles_[k].loc, newLoc))) {
-          intersects = true;
-          break;
-        }
-      }
       // Only update the particle if it is not hitting a wall
-      if(!intersects) {
+      if(!map_.Intersects(particles_[k].loc, newLoc)) {
         particles_[k].loc = newLoc;
       } else { // Set this particle same as the next one
         if(k > 0)
@@ -268,8 +294,24 @@ void ParticleFilter::GetLocation(Eigen::Vector2f* loc_ptr,
   // Compute the best estimate of the robot's location based on the current set
   // of particles. The computed values must be set to the `loc` and `angle`
   // variables to return them. Modify the following assignments:
+  // loc = Vector2f(0, 0);
+  // angle = 0;
+
+  // Calculate means
   loc = Vector2f(0, 0);
-  angle = 0;
+  float angX = 0;
+  float angY = 0;
+  for(Particle p : particles_) {
+    loc += p.loc;
+    angY += sin(p.angle);
+    angX += cos(p.angle);
+  }
+  loc.x() /= particles_.size();
+  loc.y() /= particles_.size();
+  if(angX == 0 && angY == 0)
+    angle = 0;
+  else
+    angle = atan2(angY, angX);
 }
 
 
