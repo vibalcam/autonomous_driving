@@ -50,6 +50,9 @@ using vector_map::VectorMap;
 DEFINE_double(num_particles, 50, "Number of particles");
 
 namespace particle_filter {
+// Number of particles
+const int N_PARTICLES = 30;
+
 // Values for the estimation of gaussian error
 const float K1 = 0.1; 
 const float K2 = 0.2; 
@@ -57,11 +60,22 @@ const float K3 = 0.5;
 const float K4 = 0.2; 
 // Initialization randomness values
 const float INIT_VAR_LOC = 0.3;
-const float INIT_VAR_ANG = M_PI * 13.0 / 180.0;
+const float INIT_VAR_ANG = M_PI * 10.0 / 180.0;
 
 // TODO make generic for navigation and particle filter
 // Location of the LIDAR with respect to base_link (BASE = LIDAR + v)
 const Vector2f LOCATION_LIDAR(0.2,0);
+
+// Values for the probability density function
+const float VAR_LIKELIHOOD = pow(0.07,2);
+const float GAMMA_LIKELIHOOD = 0.2;
+const float D_SHORT = 0.35;
+const float P_D_SHORT = pow(D_SHORT, 2) / VAR_LIKELIHOOD;
+const float D_LONG = 0.5;
+const float P_D_LONG = pow(D_LONG, 2) / VAR_LIKELIHOOD;
+const int N_SKIP_RAYS = 12;
+// const float D_UPDATE = 0;
+// float dist_left_update = 0;
 
 config_reader::ConfigReader config_reader_({"config/particle_filter.lua"});
 
@@ -180,6 +194,42 @@ void ParticleFilter::Update(const vector<float>& ranges,
   // observations for each particle, and assign weights to the particles based
   // on the observation likelihood computed by relating the observation to the
   // predicted point cloud.
+
+  // vector<Vector2f> scan_ptr;
+  // GetPredictedPointCloud(p_ptr->loc, p_ptr->angle, ranges.size(), range_min, 
+  //     range_max, angle_min, angle_max,&scan_ptr);
+  vector<float> scan_ptr;
+  map_.GetPredictedScan(p_ptr->loc, range_min, range_max, 
+      getValidAng(angle_min + p_ptr->angle), getValidAng(angle_max + p_ptr->angle), 
+      ranges.size(), &scan_ptr);
+  
+  double w = 0;
+  double predicted, observed;
+  // double predicted;
+  // Vector2f location_lidar_map = p_ptr->loc + LOCATION_LIDAR;
+  for(size_t k = 0; k < ranges.size(); k+=N_SKIP_RAYS) {
+    observed = ranges[k];
+    // predicted = (scan_ptr[k] - location_lidar_map).norm();
+    predicted = scan_ptr[k];
+    if(observed < range_min || observed > range_max) {
+      w += 10000;   // 0 probability, so in log likelihood -inf
+    } else if(observed < predicted - D_SHORT) {
+      w += P_D_SHORT;
+    } else if(observed > predicted + D_LONG) {
+      w += P_D_LONG;
+    } else {
+      w += pow(observed-predicted, 2) / VAR_LIKELIHOOD;
+    }
+
+    // predicted = (scan_ptr[k] - location_lidar_map).norm();
+    // w += pow(ranges[k]-predicted, 2) / VAR_LIKELIHOOD;
+    // w += pow(ranges[k]-scan_ptr[k], 2) / VAR_LIKELIHOOD;
+    // std::cout << "predicted" << predicted << std::endl;
+    // std::cout << "range" << ranges[k] << std::endl;
+    // std::cout << "range-predicted" << (ranges[k]-predicted) << std::endl;
+  }
+  // log likelihoods
+  (*p_ptr).weight = -1 * GAMMA_LIKELIHOOD * w;
 }
 
 void ParticleFilter::Resample() {
@@ -195,9 +245,49 @@ void ParticleFilter::Resample() {
 
   // You will need to use the uniform random number generator provided. For
   // example, to generate a random number between 0 and 1:
-  float x = rng_.UniformRandom(0, 1);
-  printf("Random number drawn from uniform distribution between 0 and 1: %f\n",
-         x);
+  // float x = rng_.UniformRandom(0, 1);
+  // printf("Random number drawn from uniform distribution between 0 and 1: %f\n",
+  //        x);
+
+  // TODO Low-Variance Resampling 03/31
+
+  vector<Particle> newParticles;
+  newParticles.resize(N_PARTICLES);
+  // W sum of all weights w_i
+  double sum = 0;
+  for(Particle p:particles_) {
+    sum += p.weight;
+  }
+  // draw N particles
+  float x;
+  double w;
+  for(int k=0; k<N_PARTICLES; k++) {
+    x = rng_.UniformRandom(0, sum);
+    w = 0;
+    // for each particle weight wi
+    for(Particle p:particles_) {
+      w += p.weight;
+      if(w > x) {
+        Particle newParticle = {p.loc, p.angle, 1};
+        newParticles.push_back(newParticle);
+        break;
+      }
+    }
+  }
+  particles_ = newParticles;
+
+  /* 
+  draw N particles
+  W sum of all weights w_i
+  repeat N times
+    draw random number x between 0 and W
+    W'=0
+    for each particle weight wi
+      w'=w'+w_i
+      if w'>x
+        replicate particle i
+        break for
+  */
 }
 
 void ParticleFilter::ObserveLaser(const vector<float>& ranges,
@@ -207,6 +297,25 @@ void ParticleFilter::ObserveLaser(const vector<float>& ranges,
                                   float angle_max) {
   // A new laser scan observation is available (in the laser frame)
   // Call the Update and Resample steps as necessary.
+
+  int size = particles_.size();
+  if(size <= 0)
+    return;
+
+  double w_max;
+  for(int k=0; k<size; k++) {
+    Update(ranges,range_min,range_max,
+        angle_min, angle_max, &(particles_[k]));
+        
+    if(k==0 || particles_[k].weight > w_max) {
+      w_max = particles_[k].weight;
+    }
+  }
+
+  // Normalize with max
+  for(int k=0; k<size; k++) {
+    particles_[k].weight -= w_max;
+  }
 }
 
 void ParticleFilter::ObserveOdometry(const Vector2f& odom_loc,
@@ -269,12 +378,11 @@ void ParticleFilter::Initialize(const string& map_file,
   // was received from the log. Initialize the particles accordingly, e.g. with
   // some distribution around the provided location and angle.
   map_.Load(map_file);
-  const int n = 50;
-  particles_.resize(n);
+  particles_.resize(N_PARTICLES);
   particles_.clear();
-
+  
   float epsilonX, epsilonY, epsilonTheta;
-  for (int i = 0; i < n; i++){
+  for (int i = 0; i < N_PARTICLES; i++){
     epsilonX = rng_.Gaussian(0.0, INIT_VAR_LOC);
     epsilonY = rng_.Gaussian(0.0, INIT_VAR_LOC);
     epsilonTheta = rng_.Gaussian(0.0, INIT_VAR_ANG);
@@ -297,21 +405,35 @@ void ParticleFilter::GetLocation(Eigen::Vector2f* loc_ptr,
   // loc = Vector2f(0, 0);
   // angle = 0;
 
-  // Calculate means
-  loc = Vector2f(0, 0);
-  float angX = 0;
-  float angY = 0;
-  for(Particle p : particles_) {
-    loc += p.loc;
-    angY += sin(p.angle);
-    angX += cos(p.angle);
+  // // Calculate means
+  // loc = Vector2f(0, 0);
+  // float angX = 0;
+  // float angY = 0;
+  // for(Particle p : particles_) {
+  //   loc += p.loc;
+  //   angY += sin(p.angle);
+  //   angX += cos(p.angle);
+  // }
+  // loc.x() /= particles_.size();
+  // loc.y() /= particles_.size();
+  // if(angX == 0 && angY == 0)
+  //   angle = 0;
+  // else
+  //   angle = atan2(angY, angX);
+
+  if(particles_.size() <= 0) {
+    return;
   }
-  loc.x() /= particles_.size();
-  loc.y() /= particles_.size();
-  if(angX == 0 && angY == 0)
-    angle = 0;
-  else
-    angle = atan2(angY, angX);
+  double w_max = particles_[0].weight;
+  loc = particles_[0].loc;
+  angle = particles_[0].angle;
+  for(Particle p : particles_) {
+    if(p.weight > w_max) {
+      loc = p.loc;
+      angle = p.angle;
+      w_max = p.weight;
+    }
+  }
 }
 
 
