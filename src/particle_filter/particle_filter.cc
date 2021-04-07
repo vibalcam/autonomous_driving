@@ -76,6 +76,9 @@ const float P_D_LONG = pow(D_LONG, 2) / VAR_LIKELIHOOD;
 const int N_SKIP_RAYS = 12;
 // const float D_UPDATE = 0;
 // float dist_left_update = 0;
+// bool update_available = false;
+const int N_UPDATES_RESAMPLE = 1;
+int n_updates = 0;
 
 config_reader::ConfigReader config_reader_({"config/particle_filter.lua"});
 
@@ -212,7 +215,8 @@ void ParticleFilter::Update(const vector<float>& ranges,
     // predicted = (scan_ptr[k] - location_lidar_map).norm();
     predicted = scan_ptr[k];
     if(observed < range_min || observed > range_max) {
-      w += 10000;   // 0 probability, so in log likelihood -inf
+      // w += 10000;   // 0 probability, so in log likelihood -inf
+      continue;
     } else if(observed < predicted - D_SHORT) {
       w += P_D_SHORT;
     } else if(observed > predicted + D_LONG) {
@@ -255,12 +259,14 @@ void ParticleFilter::Resample() {
   newParticles.resize(N_PARTICLES);
   // W sum of all weights w_i
   double sum = 0;
-  for(Particle p:particles_) {
-    sum += p.weight;
+  double w;
+  for(size_t k = 0; k < particles_.size(); ++k) {
+    w = exp(particles_[k].weight);
+    particles_[k].weight = w;
+    sum += w;
   }
   // draw N particles
   float x;
-  double w;
   for(int k=0; k<N_PARTICLES; k++) {
     x = rng_.UniformRandom(0, sum);
     w = 0;
@@ -306,6 +312,7 @@ void ParticleFilter::ObserveLaser(const vector<float>& ranges,
   for(int k=0; k<size; k++) {
     Update(ranges,range_min,range_max,
         angle_min, angle_max, &(particles_[k]));
+    n_updates++;
         
     if(k==0 || particles_[k].weight > w_max) {
       w_max = particles_[k].weight;
@@ -315,6 +322,12 @@ void ParticleFilter::ObserveLaser(const vector<float>& ranges,
   // Normalize with max
   for(int k=0; k<size; k++) {
     particles_[k].weight -= w_max;
+  }
+
+  // Resample
+  if(n_updates >= N_UPDATES_RESAMPLE) {
+    Resample();
+    n_updates = 0;
   }
 }
 
@@ -405,35 +418,35 @@ void ParticleFilter::GetLocation(Eigen::Vector2f* loc_ptr,
   // loc = Vector2f(0, 0);
   // angle = 0;
 
-  // // Calculate means
-  // loc = Vector2f(0, 0);
-  // float angX = 0;
-  // float angY = 0;
-  // for(Particle p : particles_) {
-  //   loc += p.loc;
-  //   angY += sin(p.angle);
-  //   angX += cos(p.angle);
-  // }
-  // loc.x() /= particles_.size();
-  // loc.y() /= particles_.size();
-  // if(angX == 0 && angY == 0)
-  //   angle = 0;
-  // else
-  //   angle = atan2(angY, angX);
-
-  if(particles_.size() <= 0) {
-    return;
-  }
-  double w_max = particles_[0].weight;
-  loc = particles_[0].loc;
-  angle = particles_[0].angle;
+  // Calculate means
+  loc = Vector2f(0, 0);
+  float angX = 0;
+  float angY = 0;
   for(Particle p : particles_) {
-    if(p.weight > w_max) {
-      loc = p.loc;
-      angle = p.angle;
-      w_max = p.weight;
-    }
+    loc += p.loc;
+    angY += sin(p.angle);
+    angX += cos(p.angle);
   }
+  loc.x() /= particles_.size();
+  loc.y() /= particles_.size();
+  if(angX == 0 && angY == 0)
+    angle = 0;
+  else
+    angle = atan2(angY, angX);
+
+  // if(particles_.size() <= 0) {
+  //   return;
+  // }
+  // double w_max = particles_[0].weight;
+  // loc = particles_[0].loc;
+  // angle = particles_[0].angle;
+  // for(Particle p : particles_) {
+  //   if(p.weight > w_max) {
+  //     loc = p.loc;
+  //     angle = p.angle;
+  //     w_max = p.weight;
+  //   }
+  // }
 }
 
 
