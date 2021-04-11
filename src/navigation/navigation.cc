@@ -232,7 +232,7 @@ float calculateMaxOptimumFreePath(float& curvature, Vector2f& goal) {
     v = v / v.norm();
     // since radius.x() is always 0
     float theta = atan2Positive(-radius.y()*v.x(), radius.y()*v.y());
-    std::cout << "Theta Max: " << (theta / M_PI*180) << std::endl;
+    // std::cout << "Theta Max: " << (theta / M_PI*180) << std::endl;
     return curvature > 0 ? theta : 2 * M_PI - theta;
   } else {
     return goal.x();
