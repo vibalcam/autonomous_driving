@@ -54,12 +54,12 @@ namespace particle_filter {
 const int N_PARTICLES = 30;
 
 // Values for the estimation of gaussian error
-const float K1 = 0.1; 
+const float K1 = 0.2; 
 const float K2 = 0.2; 
-const float K3 = 0.5; 
+const float K3 = 0.6; 
 const float K4 = 0.2; 
 // Initialization randomness values
-const float INIT_VAR_LOC = 0.3;
+const float INIT_VAR_LOC = 0.25;
 const float INIT_VAR_ANG = M_PI * 10.0 / 180.0;
 
 // TODO make generic for navigation and particle filter
@@ -67,15 +67,18 @@ const float INIT_VAR_ANG = M_PI * 10.0 / 180.0;
 const Vector2f LOCATION_LIDAR(0.2,0);
 
 // Values for the probability density function
-const float VAR_LIKELIHOOD = pow(0.07,2);
+const float VAR_LIKELIHOOD = pow(0.1,2);
 const float GAMMA_LIKELIHOOD = 0.2;
 const float D_SHORT = 0.35;
 const float P_D_SHORT = pow(D_SHORT, 2) / VAR_LIKELIHOOD;
-const float D_LONG = 0.5;
+const float D_LONG = 0.55;
 const float P_D_LONG = pow(D_LONG, 2) / VAR_LIKELIHOOD;
 const int N_SKIP_RAYS = 12;
 // const float D_UPDATE = 0;
 // float dist_left_update = 0;
+// bool update_available = false;
+const int N_UPDATES_RESAMPLE = 10;
+int n_updates = 0;
 
 config_reader::ConfigReader config_reader_({"config/particle_filter.lua"});
 
@@ -199,6 +202,7 @@ void ParticleFilter::Update(const vector<float>& ranges,
   // GetPredictedPointCloud(p_ptr->loc, p_ptr->angle, ranges.size(), range_min, 
   //     range_max, angle_min, angle_max,&scan_ptr);
   vector<float> scan_ptr;
+  // p_ptr->loc + LOCATION_LIDAR
   map_.GetPredictedScan(p_ptr->loc, range_min, range_max, 
       getValidAng(angle_min + p_ptr->angle), getValidAng(angle_max + p_ptr->angle), 
       ranges.size(), &scan_ptr);
@@ -212,7 +216,8 @@ void ParticleFilter::Update(const vector<float>& ranges,
     // predicted = (scan_ptr[k] - location_lidar_map).norm();
     predicted = scan_ptr[k];
     if(observed < range_min || observed > range_max) {
-      w += 10000;   // 0 probability, so in log likelihood -inf
+      // w += 10000;   // 0 probability, so in log likelihood -inf
+      continue;
     } else if(observed < predicted - D_SHORT) {
       w += P_D_SHORT;
     } else if(observed > predicted + D_LONG) {
@@ -249,45 +254,101 @@ void ParticleFilter::Resample() {
   // printf("Random number drawn from uniform distribution between 0 and 1: %f\n",
   //        x);
 
-  // TODO Low-Variance Resampling 03/31
+  // Low-Variance Resampling 03/31
+
+  // vector<Particle> newParticles;
+  // newParticles.resize(N_PARTICLES);
+  // // W sum of all weights w_i
+  // double sum = 0;
+  // double w;
+  // for(size_t k = 0; k < particles_.size(); ++k) {
+  //   w = exp(particles_[k].weight);
+  //   particles_[k].weight = w;
+  //   sum += w;
+  // }
+  // // draw N particles
+  // float x;
+  // for(int k=0; k<N_PARTICLES-1; k+=2) {
+  //   x = rng_.UniformRandom(0, sum);
+  //   w = 0;
+  //   // for each particle weight wi
+  //   for(Particle p:particles_) {
+  //     w += p.weight;
+  //     if(w > x) {
+  //       Particle newParticle = {p.loc, p.angle, p.weight};
+  //       newParticles[k] = newParticle;
+  //       break;
+  //     }
+  //   }
+  //   w = sum;
+  //   for(Particle p:particles_) {
+  //     w -= p.weight;
+  //     if(w < x) {
+  //       Particle newParticle = {p.loc, p.angle, p.weight};
+  //       newParticles[k+1] = newParticle;
+  //       break;
+  //     }
+  //   }
+  // }
+  // particles_ = newParticles;
 
   vector<Particle> newParticles;
   newParticles.resize(N_PARTICLES);
   // W sum of all weights w_i
   double sum = 0;
-  for(Particle p:particles_) {
-    sum += p.weight;
+  double w;
+  for(size_t k = 0; k < particles_.size(); ++k) {
+    w = exp(particles_[k].weight);
+    particles_[k].weight = w;
+    sum += w;
   }
   // draw N particles
-  float x;
-  double w;
+  float x = rng_.UniformRandom(0, sum);
+  float dist = sum / N_PARTICLES;
   for(int k=0; k<N_PARTICLES; k++) {
-    x = rng_.UniformRandom(0, sum);
     w = 0;
     // for each particle weight wi
     for(Particle p:particles_) {
       w += p.weight;
-      if(w > x) {
-        Particle newParticle = {p.loc, p.angle, 1};
-        newParticles.push_back(newParticle);
+      if(w >= x) {
+        Particle newParticle = {p.loc, p.angle, p.weight};
+        newParticles[k] = newParticle;
         break;
       }
+    }
+    x += dist;
+    if(x > sum) {
+      x -= sum;
     }
   }
   particles_ = newParticles;
 
-  /* 
-  draw N particles
-  W sum of all weights w_i
-  repeat N times
-    draw random number x between 0 and W
-    W'=0
-    for each particle weight wi
-      w'=w'+w_i
-      if w'>x
-        replicate particle i
-        break for
-  */
+  // vector<Particle> newParticles;
+  // newParticles.resize(N_PARTICLES);
+  // // W sum of all weights w_i
+  // double sum = 0;
+  // double w;
+  // for(size_t k = 0; k < particles_.size(); ++k) {
+  //   w = exp(particles_[k].weight);
+  //   particles_[k].weight = w;
+  //   sum += w;
+  // }
+  // // draw N particles
+  // float x;
+  // for(int k=0; k<N_PARTICLES; k++) {
+  //   x = rng_.UniformRandom(0, sum);
+  //   w = 0;
+  //   // for each particle weight wi
+  //   for(Particle p:particles_) {
+  //     w += p.weight;
+  //     if(w > x) {
+  //       Particle newParticle = {p.loc, p.angle, p.weight};
+  //       newParticles[k] = newParticle;
+  //       break;
+  //     }
+  //   }
+  // }
+  // particles_ = newParticles;
 }
 
 void ParticleFilter::ObserveLaser(const vector<float>& ranges,
@@ -311,10 +372,17 @@ void ParticleFilter::ObserveLaser(const vector<float>& ranges,
       w_max = particles_[k].weight;
     }
   }
+  n_updates++;
 
   // Normalize with max
   for(int k=0; k<size; k++) {
     particles_[k].weight -= w_max;
+  }
+
+  // Resample
+  if(n_updates >= N_UPDATES_RESAMPLE) {
+    Resample();
+    n_updates = 0;
   }
 }
 
@@ -352,18 +420,18 @@ void ParticleFilter::ObserveOdometry(const Vector2f& odom_loc,
       epsilonTheta = rng_.Gaussian(0.0, K3 * loc_delta.norm() + K4 * abs(deltaAngle));
 
       // Update particle
-      particles_[k].angle += deltaAngle + epsilonTheta;
-      particles_[k].angle = getValidAng(particles_[k].angle);
-      newLoc = particles_[k].loc + loc_delta + Vector2f(epsilonX, epsilonY);
+      particles_[k].angle = getValidAng(particles_[k].angle + deltaAngle + epsilonTheta);
+      particles_[k].loc += loc_delta + Vector2f(epsilonX, epsilonY);
       // Only update the particle if it is not hitting a wall
-      if(!map_.Intersects(particles_[k].loc, newLoc)) {
-        particles_[k].loc = newLoc;
-      } else { // Set this particle same as the next one
-        if(k > 0)
-          particles_[k] = particles_[k-1];
-        else
-          particles_[k] = particles_[size-1];
-      }
+      // newLoc = particles_[k].loc + loc_delta + Vector2f(epsilonX, epsilonY);
+      // if(!map_.Intersects(particles_[k].loc, newLoc)) {
+      //   particles_[k].loc = newLoc;
+      // } else { // Set this particle same as the next one
+      //   if(k > 0)
+      //     particles_[k] = particles_[k-1];
+      //   else
+      //     particles_[k] = particles_[size-1];
+      // }
     }
   }
   odom_initialized_ = true;
@@ -405,17 +473,22 @@ void ParticleFilter::GetLocation(Eigen::Vector2f* loc_ptr,
   // loc = Vector2f(0, 0);
   // angle = 0;
 
-  // // Calculate means
+  // Calculate means
   // loc = Vector2f(0, 0);
   // float angX = 0;
   // float angY = 0;
+  // // float sum = particles_.size();
+  // float sum = 0;
   // for(Particle p : particles_) {
-  //   loc += p.loc;
-  //   angY += sin(p.angle);
-  //   angX += cos(p.angle);
+  //   loc += p.loc * p.weight;
+  //   angY += sin(p.angle) * p.weight;
+  //   angX += cos(p.angle) * p.weight;
+  //   sum += p.weight;
   // }
-  // loc.x() /= particles_.size();
-  // loc.y() /= particles_.size();
+  // loc.x() /= sum;
+  // loc.y() /= sum;
+  // angX /= sum;
+  // angY /= sum;
   // if(angX == 0 && angY == 0)
   //   angle = 0;
   // else
@@ -427,13 +500,48 @@ void ParticleFilter::GetLocation(Eigen::Vector2f* loc_ptr,
   double w_max = particles_[0].weight;
   loc = particles_[0].loc;
   angle = particles_[0].angle;
+  float angY = sin(particles_[0].angle);
+  float angX = cos(particles_[0].angle);
+  float sum = 1;
   for(Particle p : particles_) {
     if(p.weight > w_max) {
       loc = p.loc;
       angle = p.angle;
+      angY = sin(p.angle);
+      angX = cos(p.angle);
+      sum = 1;
       w_max = p.weight;
+    } else if(p.weight == w_max) {
+      loc += p.loc;
+      angY += sin(p.angle);
+      angX += cos(p.angle);
+      sum++;
     }
   }
+  if(sum > 1) {
+    loc.x() /= sum;
+    loc.y() /= sum;
+    angX /= sum;
+    angY /= sum;
+    if(angX == 0 && angY == 0)
+      angle = 0;
+    else
+      angle = atan2(angY, angX);
+  }
+
+  // if(particles_.size() <= 0) {
+  //   return;
+  // }
+  // double w_max = particles_[0].weight;
+  // loc = particles_[0].loc;
+  // angle = particles_[0].angle;
+  // for(Particle p : particles_) {
+  //   if(p.weight > w_max) {
+  //     loc = p.loc;
+  //     angle = p.angle;
+  //     w_max = p.weight;
+  //   }
+  // }
 }
 
 

@@ -232,7 +232,7 @@ float calculateMaxOptimumFreePath(float& curvature, Vector2f& goal) {
     v = v / v.norm();
     // since radius.x() is always 0
     float theta = atan2Positive(-radius.y()*v.x(), radius.y()*v.y());
-    std::cout << "Theta Max: " << (theta / M_PI*180) << std::endl;
+    // std::cout << "Theta Max: " << (theta / M_PI*180) << std::endl;
     return curvature > 0 ? theta : 2 * M_PI - theta;
   } else {
     return goal.x();
@@ -256,7 +256,7 @@ float calculateFreePath(float curvature, Vector2f& goal) {
     float omega = atan2Positive(FRONT_MARGIN_BASE,r-SIDE_ABS_MARGIN_BASE);
     float maxTheta = calculateMaxOptimumFreePath(curvature, goal);  // makes sure we are not driving away from target
     dist_left = r * maxTheta;
-    std::cout << "dist: " << dist_left << std::endl;
+    // std::cout << "dist: " << dist_left << std::endl;
 
     // check if points are in the turning arc
     float distToCenter,theta;
@@ -497,7 +497,7 @@ void Navigation::Run() {
   calculatePlan(dist_left, curvature, goal, velocity);
   visualization::DrawPathOption(curvature,dist_left,SIDE_ABS_MARGIN_BASE,local_viz_msg_);
 
-  // std::cout << "Distance_left: " << (dist_left + OBSTACLE_MARGIN) << std::endl;
+  std::cout << "Distance_left: " << (dist_left + OBSTACLE_MARGIN) << std::endl;
 
   // Drive distance left
   drive(dist_left, velocity, curvature);
