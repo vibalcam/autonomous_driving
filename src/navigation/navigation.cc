@@ -31,10 +31,12 @@
 #include "shared/util/timer.h"
 #include "shared/ros/ros_helpers.h"
 #include "navigation.h"
+#include "simple_queue.h"
 #include "visualization/visualization.h"
 #include <math.h>
 #include "vector_map/vector_map.h"
 
+using geometry::Line2f;
 using Eigen::Vector2f;
 using Eigen::Rotation2Df;
 using amrl_msgs::AckermannCurvatureDriveMsg;
@@ -63,6 +65,9 @@ const bool IS_SIMULATION = true;
 
 // STATIC VALUES
 
+
+// Separation for the grid in the global planner
+const float GRID_SEPARATION = 0.25;
 // Maximum speed in m/s
 const float MAX_SPEED = 1;
 // Maximum acceleration/deceleration in m/s^2
@@ -188,11 +193,138 @@ void Navigation::ObservePointCloud(const vector<Vector2f>& cloud,
   pointCloud = cloud;
 }
 
-void calculateGlobalPlanner() {
-    /**
-     * todo
-     * preguntar si hay que correrlo en cada timestep
-     */
+float calculateHeuristic(const Vector2f& point, const Vector2f& goal) {
+  return (point - goal).norm();
+  // return sqrt(pow(point.x() - goal.x(), 2) + pow(point.y() - goal.y(), 2));
+}
+
+struct Vector2fCompare
+{
+  bool operator() (const Vector2f& lhs, const Vector2f& rhs) const
+  {
+    if(lhs.x() != rhs.x()) {
+      return lhs.x() < rhs.x();
+    } 
+    return lhs.y() < rhs.y();
+  }
+};
+
+vector<Vector2f> calculateGlobalPlanner(Vector2f& loc, Vector2f& nav_goal, bool& nav_complete) {
+  // first we have to get the maximum and minimum x and y from the map
+  volatile float min_x = map.lines[0].p0.x();
+  volatile float min_y = map.lines[0].p0.y();
+  volatile float max_x = map.lines[0].p0.x();
+  volatile float max_y = map.lines[0].p0.y();
+
+  for (const Line2f& l : map.lines) {
+    min_x = (l.p0.x() < min_x) ?  l.p0.x() : min_x;
+    min_y = (l.p0.y() < min_y) ?  l.p0.y() : min_y;
+    max_x = (l.p0.x() > max_x) ?  l.p0.x() : max_x;
+    max_y = (l.p0.y() > max_y) ?  l.p0.y() : max_y;
+
+    min_x = (l.p1.x() < min_x) ?  l.p1.x() : min_x;
+    min_y = (l.p1.y() < min_y) ?  l.p1.y() : min_y;
+    max_x = (l.p1.x() > max_x) ?  l.p1.x() : max_x;
+    max_y = (l.p1.y() > max_y) ?  l.p1.y() : max_y;
+  }
+
+  // Generate Grid
+  volatile int dim_x = (max_x - min_x) / GRID_SEPARATION;
+  volatile int dim_y = (max_y - min_y) / GRID_SEPARATION;
+  Vector2f grid[dim_x][dim_y];
+  for (int i=0; i<dim_x; i++) {
+    for (int j=0; j<dim_y; j++) {
+      grid[i][j] = Vector2f(GRID_SEPARATION*i + min_x, GRID_SEPARATION*j + min_y);
+    }
+  }
+
+  volatile int start_x_index = (loc.x() - min_x) / GRID_SEPARATION;
+  volatile int start_y_index = (loc.y() - min_y) / GRID_SEPARATION;
+  volatile int goal_x_index = (nav_goal.x() - min_x) / GRID_SEPARATION;
+  volatile int goal_y_index = (nav_goal.y() - min_y) / GRID_SEPARATION;
+
+  Vector2f start = grid[start_x_index][start_y_index];
+  Vector2f goal = grid[goal_x_index][goal_y_index];
+  Vector2f current;
+
+  vector<Vector2f> result_path;
+  SimpleQueue<Vector2f, float> frontier;
+  Vector2f *neighbors[8];
+  int point_x_index;
+  int point_y_index;
+  int new_cost;
+  frontier.Push(start, 0);
+  std::map<Vector2f, Vector2f, Vector2fCompare> parent;
+  parent[start] = start;
+  std::map<Vector2f, int, Vector2fCompare> cost;
+  cost[start] = 0;
+  int neighbors_index;
+
+  while(!frontier.Empty()) {
+    current = frontier.Pop();
+    if (current == goal) {
+      break;
+    }
+
+    point_x_index = (current.x() - min_x) / GRID_SEPARATION;
+    point_y_index = (current.y() - min_y) / GRID_SEPARATION;
+    neighbors_index = 0;
+    for (int x_index=-1; x_index<2; x_index++) {
+      for (int y_index=-1; y_index<2; y_index++) {
+        if ((x_index == 0) && (y_index == 0)) {
+          continue;
+        } else {
+          // if not out of bounds
+          if((point_x_index - x_index) >= 0 && (point_x_index - x_index) < dim_x &&
+             (point_y_index - y_index) >= 0 && (point_y_index - y_index) < dim_y) {
+            neighbors[neighbors_index] = &(grid[point_x_index - x_index][point_y_index - y_index]);
+          } else {
+            neighbors[neighbors_index] = nullptr;
+          }
+          neighbors_index++;
+        }
+      }
+    }
+
+    Vector2f value;
+    for (int i=0;i<8;i++) {
+      if (neighbors[i] == nullptr || map.Intersects(current, *(neighbors[i]))) {
+        continue;
+      }
+      value = *(neighbors[i]);
+      new_cost = cost[current] + 1;
+      if ((cost.find(value) == cost.end()) || (new_cost < cost[value])) {
+        cost[value] = new_cost;
+        frontier.Push(value, -(new_cost + calculateHeuristic(value, goal)));
+        parent[value] = current;
+      }
+    }
+  }
+
+  result_path.push_back(Vector2f(nav_goal.x(), nav_goal.y()));
+  result_path.push_back(current);
+
+  // todo add after
+  // nav_complete = true;
+  
+  while (parent[current] != current) {
+    result_path.push_back(parent[current]);
+    current = parent[current];
+  }
+  
+  result_path.push_back(Vector2f(loc.x(), loc.y()));
+
+  return result_path;
+
+}
+
+void visualizeGlobalPath(vector<Vector2f> &result_path, VisualizationMsg& viz_msg) {
+  for (size_t i=0;i<result_path.size();++i) {
+    visualization::DrawPoint(result_path[i], 0xFF0000, viz_msg);
+    if (i > 0) {
+      visualization::DrawLine(result_path[i-1], result_path[i], 0xFF0000, viz_msg);
+    }
+  }
 }
 
 void visualizeCarDimensions(VisualizationMsg& viz_msg) {
@@ -497,29 +629,30 @@ void Navigation::Run() {
   visualizeCarDimensions(local_viz_msg_);
 
   float velocity = robot_vel_.norm();
-  // float curvature = FLAGS_cp3_curvature;
-  // float dist_left = FLAGS_cp1_distance - distCovered;
-  calculateGlobalPlanner();
-  // todo set goal to appropiate goal
-  Vector2f goal(3,0);
-  // nav_goal_angle_ = 0;
-  visualization::DrawCross(goal, 0.1, 0xff0324, local_viz_msg_);
-
-  // Do latency compensation
-  if(!IS_SIMULATION) {
-    futurePosition = doLatencyCompensation(velocity, robot_omega_);
-  }
-  // goal -= futurePosition;
-
-  // Plan path
   float dist_left, curvature;
-  calculatePlan(dist_left, curvature, goal, velocity);
-  visualization::DrawPathOption(curvature,dist_left,SIDE_ABS_MARGIN_BASE,local_viz_msg_);
+  if (!nav_complete_) {
+    vector<Vector2f> global_plan = calculateGlobalPlanner(robot_loc_, nav_goal_loc_, nav_complete_);
+    visualizeGlobalPath(global_plan, global_viz_msg_);
+    // todo set goal to appropiate goal
+    // Vector2f goal(3,0);
+    Vector2f goal = global_plan.end()[-2];
+    visualization::DrawCross(goal, 0.1, 0xff0324, local_viz_msg_);
 
-  std::cout << "Distance_left: " << (dist_left + OBSTACLE_MARGIN) << std::endl;
+    // Do latency compensation
+    if(!IS_SIMULATION) {
+      futurePosition = doLatencyCompensation(velocity, robot_omega_);
+    }
+    // goal -= futurePosition;
 
-  // Drive distance left
-  drive(dist_left, velocity, curvature);
+    // Plan path
+    calculatePlan(dist_left, curvature, goal, velocity);
+    visualization::DrawPathOption(curvature,dist_left,SIDE_ABS_MARGIN_BASE,local_viz_msg_);
+
+    std::cout << "Distance_left: " << (dist_left + OBSTACLE_MARGIN) << std::endl;
+
+    // Drive distance left
+    // drive(dist_left, velocity, curvature);
+  }
 
   // Save commands
   futureVelocities[FWD_PREDICT_PERIODS-1] = velocity;
