@@ -33,6 +33,7 @@
 #include "navigation.h"
 #include "visualization/visualization.h"
 #include <math.h>
+#include "vector_map/vector_map.h"
 
 using Eigen::Vector2f;
 using Eigen::Rotation2Df;
@@ -113,6 +114,8 @@ const float SIDE_ABS_MARGIN_BASE = SIDE_ABS_BASE + OBSTACLE_MARGIN;
 
 // Point cloud from the LIDAR in the sensor's reference frame
 vector<Vector2f> pointCloud;
+// Map
+vector_map::VectorMap map;
 float distCovered = 0;
 bool isFirst = true;
 float futureVelocities[FWD_PREDICT_PERIODS];
@@ -135,14 +138,21 @@ Navigation::Navigation(const string& map_file, ros::NodeHandle* n) :
   global_viz_msg_ = visualization::NewVisualizationMessage(
       "map", "navigation_global");
   InitRosHeader("base_link", &drive_msg_.header);
+
+  map = vector_map::VectorMap(map_file);
 }
 
 void Navigation::SetNavGoal(const Vector2f& loc, float angle) {
     // Update the current navigation target
+    nav_goal_loc_ = loc;
+    nav_goal_angle_ = angle;
+    nav_complete_ = false;  //todo update tu true when arrived
 }
 
 void Navigation::UpdateLocation(const Eigen::Vector2f& loc, float angle) {
     // Update the current estimate of the robot's position in the map reference frame.
+    robot_loc_ = loc;
+    robot_angle_ = angle;
 }
 
 void Navigation::UpdateOdometry(const Vector2f& loc,
@@ -150,15 +160,15 @@ void Navigation::UpdateOdometry(const Vector2f& loc,
                                 const Vector2f& vel,
                                 float ang_vel) {
     if(!isFirst) {
-      Rotation2Df r1(-robot_angle_);
-      Vector2f loc_rel = r1 * (loc - robot_loc_);
+      Rotation2Df r1(-odom_angle_);
+      Vector2f loc_rel = r1 * (loc - odom_loc_);
       distCovered += loc_rel.norm();
     }
     isFirst = false;
     
     // Update the robot's position in the odometry reference frame.
-    robot_loc_ = loc;
-    robot_angle_ = angle;
+    odom_loc_ = loc;
+    odom_angle_ = angle;
     // Update the current estimate of the robot's velocity
     robot_vel_ = vel;
     std::cout << "Velocity: " << vel << std::endl;
@@ -176,6 +186,13 @@ void Navigation::ObservePointCloud(const vector<Vector2f>& cloud,
   // Here cloud is an array of points observed by the laser sensor, in the sensor's reference frame
   // This information can be used to detect obstacles in the robot's path.
   pointCloud = cloud;
+}
+
+void calculateGlobalPlanner() {
+    /**
+     * todo
+     * preguntar si hay que correrlo en cada timestep
+     */
 }
 
 void visualizeCarDimensions(VisualizationMsg& viz_msg) {
@@ -482,6 +499,8 @@ void Navigation::Run() {
   float velocity = robot_vel_.norm();
   // float curvature = FLAGS_cp3_curvature;
   // float dist_left = FLAGS_cp1_distance - distCovered;
+  calculateGlobalPlanner();
+  // todo set goal to appropiate goal
   Vector2f goal(3,0);
   // nav_goal_angle_ = 0;
   visualization::DrawCross(goal, 0.1, 0xff0324, local_viz_msg_);
