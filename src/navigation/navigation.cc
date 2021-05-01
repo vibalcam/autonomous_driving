@@ -102,7 +102,8 @@ const float MIN_CLEARANCE = 0.3;
 // Weight to calculate best path option
 // const float W_CLEARANCE = 15;
 // Weight to calculate best path option
-const float W_DIST_GOAL = 0.1;
+const float W_DIST_GOAL = 10;
+const float W2_DIST_GOAL = 0.01;
 
 // Dimensions of car in m
 // const float WIDTH = 0.281;
@@ -116,6 +117,9 @@ const float SIDE_ABS_BASE = 0.1405; // absolute value, both sides (real measure 
 const float FRONT_MARGIN_BASE = FRONT_BASE + OBSTACLE_MARGIN;
 const float REER_MARGIN_BASE = REER_BASE - OBSTACLE_MARGIN;
 const float SIDE_ABS_MARGIN_BASE = SIDE_ABS_BASE + OBSTACLE_MARGIN;
+const float RADIUS_PURE_PURSUIT = 3;
+const float RADIUS_RECALCULATE = 1.5;
+const float STOP_DISTANCE = 0.25;
 
 // Point cloud from the LIDAR in the sensor's reference frame
 vector<Vector2f> pointCloud;
@@ -126,6 +130,11 @@ bool isFirst = true;
 float futureVelocities[FWD_PREDICT_PERIODS];
 float futureCurvatures[FWD_PREDICT_PERIODS];
 Vector2f futurePosition(0,0);
+/*
+  Contains the points to reach the navigation goal
+  First positions in the vector are the closest to the goal
+*/
+vector<Vector2f> global_plan_path;
 
 Navigation::Navigation(const string& map_file, ros::NodeHandle* n) :
     robot_loc_(0, 0),
@@ -151,7 +160,9 @@ void Navigation::SetNavGoal(const Vector2f& loc, float angle) {
     // Update the current navigation target
     nav_goal_loc_ = loc;
     nav_goal_angle_ = angle;
-    nav_complete_ = false;  //todo update tu true when arrived
+    nav_complete_ = false;
+    global_plan_path.clear();
+    global_plan_path.push_back(loc);
 }
 
 void Navigation::UpdateLocation(const Eigen::Vector2f& loc, float angle) {
@@ -303,9 +314,6 @@ vector<Vector2f> calculateGlobalPlanner(Vector2f& loc, Vector2f& nav_goal, bool&
 
   result_path.push_back(Vector2f(nav_goal.x(), nav_goal.y()));
   result_path.push_back(current);
-
-  // todo add after
-  // nav_complete = true;
   
   while (parent[current] != current) {
     result_path.push_back(parent[current]);
@@ -384,7 +392,7 @@ float calculateMaxOptimumFreePath(float& curvature, Vector2f& goal) {
     // std::cout << "Theta Max: " << (theta / M_PI*180) << std::endl;
     return curvature > 0 ? theta : 2 * M_PI - theta;
   } else {
-    return goal.x();
+    return goal.x() >= 0 ? goal.x() : 0;
   }
 }
 
@@ -514,7 +522,8 @@ void calculatePlan(float& dist_left, float& curvature, Vector2f& goal, float& ve
     // score = freePath + W_CLEARANCE * clearance - W_DIST_GOAL * distToGoal;
     // use narrow openings ignoring first dist to goal and then look for close by solutions
     score = freePath - W_DIST_GOAL * distToGoal;
-    if(score > bestScore || (score == bestScore && abs(cur_curvature) < abs(curvature))) {
+    // if(score > bestScore || (score == bestScore && abs(cur_curvature) < abs(curvature))) {
+    if(score > bestScore) {
       curvature = cur_curvature;
       dist_left = freePath;
       bestScore = score;
@@ -534,9 +543,12 @@ void calculatePlan(float& dist_left, float& curvature, Vector2f& goal, float& ve
   while(cur_curvature >= min_curv) {
     freePath = calculateFreePath(cur_curvature, goal);
     clearance = calculateClearance(cur_curvature, goalNorm, velocity);
+    distToGoal = calculateDistToGoal(freePath, cur_curvature, goal);
+    score = clearance - W2_DIST_GOAL * distToGoal;
     // score = freePath + W_CLEARANCE / goal.norm() * clearance;
-    if(clearance > bestScore || (clearance == bestScore && abs(cur_curvature) < abs(curvature))) {
-      bestScore = clearance;
+    // if(clearance > bestScore || (clearance == bestScore && abs(cur_curvature) < abs(curvature))) {
+    if(score > bestScore) {
+      bestScore = score;
       curvature = cur_curvature;
       dist_left = freePath;
     }
@@ -544,7 +556,8 @@ void calculatePlan(float& dist_left, float& curvature, Vector2f& goal, float& ve
   }
 }
 
-Vector2f doLatencyCompensation(float& velocity, float angVel) {
+// Vector2f doLatencyCompensation(float& velocity, float angVel) {
+Vector2f doLatencyCompensation(float& velocity) {
   // // Forward predict to take into account latency
   // for(int k=0; k < FWD_PREDICT_PERIODS; k++) {
   //   // Distance covered in this period: (v2-v1)/2*t+v1*t=((v2-v1)/2+v1)*t
@@ -621,6 +634,50 @@ void drive(float& dist_left, float& velocity, float& curvature) {
   drive_pub_.publish(drive_msg_);
 }
 
+Vector2f getCarrot(Vector2f& robot_loc, float robot_angle, float radius, VisualizationMsg& viz_msg) {
+  // for (size_t i=0;i<global_plan.size();++i) {
+  //   if (global_plan[i].norm() > radious) {
+  //     if (i>0) {
+  //       return global_plan[i-1];
+  //     } else {
+  //       return global_plan[0];
+  //     }
+  //   }
+  // }
+
+  int size = global_plan_path.size();
+  Vector2f carrot_map = global_plan_path[0];
+  // for (int i=size-1;i>=0;--i) {
+  for (int i=0; i < size; i++) {
+    if ((global_plan_path[i] - robot_loc).norm() < radius && 
+          !map.Intersects(robot_loc, global_plan_path[i])) {
+      carrot_map = global_plan_path[i];
+      break;
+    }
+  }
+
+  visualization::DrawCross(carrot_map, 0.2, 0x424ef5, viz_msg);
+
+  return carrot_map;
+  // Rotation2Df rMap(-robot_angle);
+  // return rMap * (carrot_map - robot_loc);
+}
+
+bool planStillValid(Vector2f& robot_loc, float radius) {
+  int size = global_plan_path.size();
+  // for (int i=size-1;i>=0;--i) {
+  for (int i=0; i < size; i++) {
+    if ((global_plan_path[i] - robot_loc).norm() < radius) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool reachedGoal(Vector2f &goal, Vector2f &loc, float stop_distance) {
+  return (goal - loc).norm() <= stop_distance;
+}
+
 void Navigation::Run() {
   // Called every timestep. This will be the main entrypoint of the navigation code, and is responsible for publishing appropriate navitation commands.
   // Clear Visualizations
@@ -630,29 +687,46 @@ void Navigation::Run() {
 
   float velocity = robot_vel_.norm();
   float dist_left, curvature;
-  if (!nav_complete_) {
-    vector<Vector2f> global_plan = calculateGlobalPlanner(robot_loc_, nav_goal_loc_, nav_complete_);
-    visualizeGlobalPath(global_plan, global_viz_msg_);
-    // todo set goal to appropiate goal
-    // Vector2f goal(3,0);
-    Vector2f goal = global_plan.end()[-2];
-    visualization::DrawCross(goal, 0.1, 0xff0324, local_viz_msg_);
 
-    // Do latency compensation
-    if(!IS_SIMULATION) {
-      futurePosition = doLatencyCompensation(velocity, robot_omega_);
-    }
-    // goal -= futurePosition;
+  // Do latency compensation
+  if(!IS_SIMULATION) {
+    futurePosition = doLatencyCompensation(velocity);
+  }
+  Vector2f latRobotLoc = robot_loc_ + futurePosition;
+
+  if (!nav_complete_ && !(nav_complete_ = reachedGoal(nav_goal_loc_, latRobotLoc, STOP_DISTANCE))) {
+  // if (!nav_complete_) {
+    // nav_complete_ = reachedGoal(nav_goal_loc_, , STOP_DISTANCE);
+    if (!planStillValid(latRobotLoc, RADIUS_RECALCULATE)) {
+      global_plan_path = calculateGlobalPlanner(latRobotLoc, nav_goal_loc_, nav_complete_);
+    } 
+    
+    visualizeGlobalPath(global_plan_path, global_viz_msg_);
+    // Vector2f goal(3,0);
+    // Vector2f goal = global_plan.end()[-2];
+    Vector2f goal = getCarrot(latRobotLoc, robot_angle_, RADIUS_PURE_PURSUIT, global_viz_msg_);
+    Rotation2Df rMap(-robot_angle_);
+    goal = rMap * (goal - latRobotLoc);
+    visualization::DrawCross(goal, 0.2, 0xff0324, local_viz_msg_);
+
+    // // Do latency compensation
+    // if(!IS_SIMULATION) {
+    //   futurePosition = doLatencyCompensation(velocity, robot_omega_);
+    //   goal -= futurePosition;
+    // }
 
     // Plan path
     calculatePlan(dist_left, curvature, goal, velocity);
     visualization::DrawPathOption(curvature,dist_left,SIDE_ABS_MARGIN_BASE,local_viz_msg_);
-
-    std::cout << "Distance_left: " << (dist_left + OBSTACLE_MARGIN) << std::endl;
-
-    // Drive distance left
-    // drive(dist_left, velocity, curvature);
+  } else {
+    dist_left = 0;
+    curvature = 0;
   }
+
+  std::cout << "Distance_left: " << (dist_left + OBSTACLE_MARGIN) << std::endl;
+
+  // Drive distance left
+  drive(dist_left, velocity, curvature);
 
   // Save commands
   futureVelocities[FWD_PREDICT_PERIODS-1] = velocity;
