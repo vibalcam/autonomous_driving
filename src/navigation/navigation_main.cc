@@ -69,7 +69,8 @@ DEFINE_string(init_topic,
               "initialpose",
               "Name of ROS topic for initialization");
 // DEFINE_string(map_file, "~/amrl_maps/GDC1/GDC1.vectormap.txt", "Path to map file");
-DEFINE_string(map_file, "/u/vibalcam/amrl_libraries/amrl_maps/GDC1/GDC1.vectormap.txt", "Path to map file");
+// DEFINE_string(map_file, "/u/vibalcam/amrl_libraries/amrl_maps/GDC1/GDC1.vectormap.txt", "Path to map file");
+DEFINE_string(map_file, "/home/amrl_user/amrl_libraries/amrl_maps/GDC1/GDC1.vectormap.txt", "Path to map file");
 
 bool run_ = true;
 sensor_msgs::LaserScan last_laser_msg_;

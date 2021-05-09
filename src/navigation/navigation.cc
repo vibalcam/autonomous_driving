@@ -76,7 +76,7 @@ const float MAX_ACCELERATION = 3;
 const float DELTA_T = 0.05;
 // System latency in s
 // const float LATENCY = 0.15;
-const int FWD_PREDICT_PERIODS = 4;  // latency takes n instructions
+const int FWD_PREDICT_PERIODS = 6;  // latency takes n instructions
 // const int FWD_PREDICT_PERIODS = 2;  // latency takes n instructions
 // Location of the LIDAR with respect to base_link (BASE = LIDAR + v)
 const Vector2f LOCATION_LIDAR(0.2,0);
@@ -205,8 +205,14 @@ void Navigation::ObservePointCloud(const vector<Vector2f>& cloud,
 }
 
 float calculateHeuristic(const Vector2f& point, const Vector2f& goal) {
-  return (point - goal).norm();
-  // return sqrt(pow(point.x() - goal.x(), 2) + pow(point.y() - goal.y(), 2));
+  float min_distance = map.lines[0].Distance(point);
+  for (const Line2f& l : map.lines) {
+    if (min_distance > l.Distance(point)) {
+      min_distance = l.Distance(point);
+    }
+  }
+
+  return (point - goal).norm() + 10/pow(min_distance,2);
 }
 
 struct Vector2fCompare
