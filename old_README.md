@@ -1,12 +1,4 @@
-# UT CS378 Autonomous Driving
-
-Autonomous Driving Project: autonomous driving car using a lidar on ROS
-
-Uses short-term navigation taking into account odometry and obstacle avoidance, particle filter to locate itself, long-term graph planner
-
-
-
-## cs378_starter (Starter Readme)
+# cs378_starter (Starter Readme)
 
 ### Using this Repo
 You will be using a copy of this repo for all development in the class. This repo provides starter code for the ROS subscriptions, publishers and control loops you will be using. Note that for the purposes of this course, this repository depends upon the `ut_automata` repository found here: https://github.com/ut-amrl/ut_automata. Please follow the instructions on that repo's README or from the UT AUTOmata [reference manual](https://drive.google.com/file/d/1OUp6FGUPEClpTbXKK8XssCad9MBMnHP-/view?usp=sharing) before continuing.
